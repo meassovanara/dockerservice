@@ -1,1 +1,132 @@
+pipeline{
+    #agent any
+    agent any
+    parameters{
+      choice(name: 'APP_ENV', choices: ['dev','uat','prod'], description: '')
+      booleanParam(name: 'Scan_URL', defaultValue: false, description: 'Scan URL')
+    }
+    environment{
+      Telegram_Token=credentials('Telegram_Token')
+      Telegram_ChatID=credentials('Telegram_ChatID')
+      docker_registry_password=credentials("docker_registry_password")
+      git_repo="https://gitlab.com/mpwt-cambodia/employee-api.git"
+      git_branch="master"
+      project_path="employee-api"
+      project_name="employee-api"
+      registry_username="salacyber"
+      registry_url="salacyber/employee-api"
+    }
+    stages{
+        // stage('Clean Workspace'){
+        //   // agent {
+        //   //     label 'linux'
+        //   //   }
+        //   steps {
+        //     cleanWs()
+        //   }
+        // }
+        stage("Configure"){
+            steps{
+              script {
+                sh """
+                  ansible-playbook ansible/configure.yml \
+                                  -i ansible/hosts \
+                                  -e git_repo=${git_repo} \
+                                  -e git_branch=${git_branch} \
+                                  -e workspace=${WORKSPACE} \
+                                  -e project_path=${project_path}
+                """
+              }
+            }
+        }
+        stage("Build"){
+            steps{
+              script{
+                sh """
+                  ansible-playbook ansible/docker-build.yml \
+                                   -i ansible/hosts \
+                                   -e workspace=${WORKSPACE} \
+                                   -e project_path=${project_path} \
+                                   -e registry_username="${registry_username}" \
+                                   -e registry_password='${docker_registry_password}' \
+                                   -e registry_url="${registry_url}" \
+                                   -e version="${APP_ENV}-${BUILD_NUMBER}"
 
+                """
+              }
+            }
+        }
+        // stage ('Approval Deploy Production'){
+        //   steps {
+        //     // sh """
+        //     //   curl -s -X POST https://api.telegram.org/bot$Telegram_Token/sendMessage \
+        //     //             -d chat_id=${Telegram_ChatID} \
+        //     //             -d parse_mode="HTML" \
+        //     //             -d disable_web_page_preview=true \
+        //     //             -d text="<b>Stage</b>: Dear Management Team please help check and approve to proceed deploy employee ui to production : https://jenkins.sothy.cloud/job/management/job/employee-ui-approval" 
+        //     // """
+        //     script {
+        //       timeout(time: 30, unit: "MINUTES") {
+        //         def userInputResult = input(
+        //                     id: "userInput",
+        //                     submitter: 'salacyber',
+        //                     submitterParameter: 'submitter',
+        //                     message: "No critical issue on Employee UI UAT?",
+        //                     ok: 'Approve',
+        //                     parameters: [
+        //                       [$class: 'TextParameterDefinition',
+        //                           name: 'comment',
+        //                           defaultValue: "",
+        //                           description: "comment"]
+        //                     ])
+        //         echo "It was `${userInputResult.submitter}` who submitted the dialog."
+        //         def user_submit = userInputResult.submitter
+        //         env.user_submit = user_submit
+        //         def comments = userInputResult.comment
+        //         env.comments = comments
+        //       }
+        //     }
+        //   }
+			  // }
+        stage("Deploy"){
+            steps{
+              script {
+                sh """
+                  ansible-playbook ansible/deployment.yml \
+                                   -i ansible/hosts \
+                                   -l "app-${APP_ENV}" \
+                                   -e project_name=${project_name} \
+                                   -e registry_username="${registry_username}" \
+                                   -e registry_password='${docker_registry_password}' \
+                                   -e registry_url="${registry_url}" \
+                                   -e version="${APP_ENV}-${BUILD_NUMBER}"
+                """
+              }
+            }
+        }
+    }
+    post{
+        always{
+          script {
+            sh """
+						curl -s -X POST https://api.telegram.org/bot$Telegram_Token/sendMessage \
+											-d chat_id=${Telegram_ChatID} \
+											-d parse_mode="HTML" \
+											-d disable_web_page_preview=true \
+											-d text="<b>Stage</b>: Deploy employee-api \
+											%0A<b>Status</b>: ${currentBuild.currentResult} \
+											%0A<b>Version</b>: ${APP_ENV}-${BUILD_NUMBER} \
+											%0A<b>Environment</b>: ${APP_ENV} \
+											%0A<b>Application URL</b>: https://app.sothy.cloud \
+											%0A<b>User Build</b>: ${BUILD_USER}" 
+					"""
+          }
+        }
+        // success{
+        //     echo "========pipeline executed successfully ========"
+        // }
+        // failure{
+        //     echo "========pipeline execution failed========"
+        // }
+    }
+}
